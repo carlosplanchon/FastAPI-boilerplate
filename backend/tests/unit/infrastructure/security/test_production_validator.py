@@ -21,12 +21,14 @@ class TestProductionSecurityValidator:
             "ENVIRONMENT": EnvironmentOption.PRODUCTION,
             "SECRET_KEY": "xF9mWqP3nL7vBfKsRt8HjZ2CyE5QaM6NuV4DgX1SpY7LwB9KzT3RhI0UoJ5PcA2MvS8",
             "POSTGRES_PASSWORD": "secure_db_password",
+            "DATABASE_URL_OVERRIDE": None,
             "REDIS_PASSWORD": "secure_redis_password",
             "CACHE_BACKEND": "memcached",
             "RATE_LIMITER_BACKEND": "memcached",
             "SESSION_BACKEND": "redis",
             "CORS_ENABLED": True,
             "CORS_ORIGINS": "https://example.com",
+            "CORS_ALLOW_CREDENTIALS": False,
             "DEBUG": False,
             "ENABLE_DOCS_IN_PRODUCTION": False,
             "SESSION_SECURE_COOKIES": True,
@@ -135,6 +137,64 @@ class TestProductionSecurityValidator:
 
         assert "Database password is empty" in str(exc_info.value)
 
+    def test_database_url_password_overrides_postgres_password(self):
+        """Test that credentials in DATABASE_URL are what gets validated.
+
+        A managed provider (Neon, RDS, Cloud SQL) carries its credentials in
+        DATABASE_URL while POSTGRES_PASSWORD keeps its default — that must not
+        be reported as insecure.
+        """
+        settings = self.create_mock_settings(
+            POSTGRES_PASSWORD="postgres",
+            DATABASE_URL_OVERRIDE="postgresql+asyncpg://db_user:not_a_real_password@db.example.com:5432/app?ssl=require",
+        )
+        validator = ProductionSecurityValidator(settings)
+
+        validator.validate_production_security()
+
+    def test_default_password_in_database_url_raises_error(self):
+        """Test that a default password inside DATABASE_URL is still caught."""
+        settings = self.create_mock_settings(
+            POSTGRES_PASSWORD="secure_db_password",
+            DATABASE_URL_OVERRIDE="postgresql+asyncpg://postgres:postgres@db.example.com:5432/app",
+        )
+        validator = ProductionSecurityValidator(settings)
+
+        with pytest.raises(ProductionSecurityError) as exc_info:
+            validator.validate_production_security()
+
+        assert "default credentials" in str(exc_info.value)
+
+    def test_percent_encoded_password_in_database_url_is_decoded(self):
+        """Test that a percent-encoded default password is decoded before checking."""
+        settings = self.create_mock_settings(
+            DATABASE_URL_OVERRIDE="postgresql+asyncpg://postgres:postgre%73@db.example.com:5432/app",
+        )
+        validator = ProductionSecurityValidator(settings)
+
+        with pytest.raises(ProductionSecurityError) as exc_info:
+            validator.validate_production_security()
+
+        assert "default credentials" in str(exc_info.value)
+
+    def test_database_url_without_password_warns_instead_of_failing(self, caplog):
+        """Test that a passwordless DATABASE_URL warns but still starts.
+
+        Authentication may be handled outside the connection string (IAM,
+        client certificates, a trusted socket), which cannot be verified here.
+        """
+        settings = self.create_mock_settings(
+            POSTGRES_PASSWORD="postgres",
+            DATABASE_URL_OVERRIDE="postgresql+asyncpg://app_user@db.example.com:5432/app",
+        )
+        validator = ProductionSecurityValidator(settings)
+
+        validator.validate_production_security()
+
+        warning_logs = [record for record in caplog.records if record.levelname == "WARNING"]
+        password_warnings = [log for log in warning_logs if "DATABASE_URL is set but contains no password" in log.message]
+        assert len(password_warnings) > 0
+
     def test_multiple_critical_errors_combined(self):
         """Test that multiple critical errors are combined in one message."""
         settings = self.create_mock_settings(SECRET_KEY="insecure", POSTGRES_PASSWORD="postgres")
@@ -184,17 +244,18 @@ class TestProductionSecurityValidator:
         shared_warnings = [log for log in warning_logs if "sharing the same Redis instance" in log.message]
         assert len(shared_warnings) > 0
 
-    def test_permissive_cors_logs_warning(self, caplog):
-        """Test that permissive CORS logs warning."""
-        settings = self.create_mock_settings(CORS_ORIGINS="*")
+    @pytest.mark.parametrize(("allow_credentials", "expect_note"), [(True, True), (False, False)])
+    def test_cors_wildcard_raises_error(self, allow_credentials, expect_note):
+        """Test that CORS_ORIGINS='*' is a critical error, noting credentials when they are allowed."""
+        settings = self.create_mock_settings(CORS_ORIGINS="*", CORS_ALLOW_CREDENTIALS=allow_credentials)
         validator = ProductionSecurityValidator(settings)
 
-        validator.validate_production_security()
+        with pytest.raises(ProductionSecurityError) as exc_info:
+            validator.validate_production_security()
 
-        # Check for CORS warning
-        warning_logs = [record for record in caplog.records if record.levelname == "WARNING"]
-        cors_warnings = [log for log in warning_logs if "CORS_ORIGINS" in log.message and "allow all origins" in log.message]
-        assert len(cors_warnings) > 0
+        message = str(exc_info.value)
+        assert "CORS_ORIGINS contains '*'" in message
+        assert ("CORS_ALLOW_CREDENTIALS=true" in message) is expect_note
 
     def test_debug_enabled_logs_warning(self, caplog):
         """Test that debug mode enabled logs warning."""
@@ -265,17 +326,16 @@ class TestProductionSecurityValidator:
         with pytest.raises(ProductionSecurityError):
             validate_production_security(settings)
 
-    def test_no_admin_credentials_skips_admin_checks(self, caplog):
-        """Test that missing admin credentials skip admin checks."""
+    def test_empty_admin_credentials_raises_error(self):
+        """Test that an enabled admin interface without credentials is a critical issue."""
         settings = self.create_mock_settings(ADMIN_USERNAME="", ADMIN_PASSWORD="")
         validator = ProductionSecurityValidator(settings)
 
-        validator.validate_production_security()
+        with pytest.raises(ProductionSecurityError) as exc_info:
+            validator.validate_production_security()
 
-        # Should not have admin credential warnings
-        warning_logs = [record for record in caplog.records if record.levelname == "WARNING"]
-        admin_warnings = [log for log in warning_logs if "Admin username" in log.message or "Admin password" in log.message]
-        assert len(admin_warnings) == 0
+        assert "ADMIN_USERNAME" in str(exc_info.value)
+        assert "ADMIN_PASSWORD" in str(exc_info.value)
 
     def test_redis_ssl_with_external_host(self, caplog):
         """Test that external Redis without SSL logs warning."""

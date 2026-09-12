@@ -10,6 +10,7 @@ the route handlers in ``routes.py``.
 from crudauth.oauth import OAuthAccountService, OAuthProviderFactory
 from crudauth.storage import get_session_storage
 
+from ...modules.user.constants import NAME_MAX_LENGTH
 from ..config.settings import settings
 from .setup import _session_redis_url, _use_redis, auth
 
@@ -41,6 +42,5 @@ oauth_state_storage = get_session_storage(
 
 oauth_account_service = OAuthAccountService(
     repo=auth.repo,
-    # suggested_name is the provider's full name, unbounded; User.name is String(30).
-    new_user_fields=lambda ctx: {"name": ctx.suggested_name[:30]},
+    new_user_fields=lambda ctx: {"name": ctx.suggested_name[:NAME_MAX_LENGTH]},
 )

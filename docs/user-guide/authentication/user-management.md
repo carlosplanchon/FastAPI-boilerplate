@@ -160,12 +160,13 @@ If the body changes `username` or `email`, the service also re-checks uniqueness
 The `UserUpdate` schema makes every field optional so clients can send partial updates:
 
 ```python
-# USERNAME_MAX_LENGTH (32) and USERNAME_PATTERN are defined at the top of
-# modules/user/schemas.py and shared by every schema carrying a username
+from .constants import NAME_MAX_LENGTH, USERNAME_MAX_LENGTH, USERNAME_PATTERN
+
+
 class UserUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: Annotated[str | None, Field(min_length=2, max_length=30, default=None)]
+    name: Annotated[str | None, Field(min_length=2, max_length=NAME_MAX_LENGTH, default=None)]
     username: Annotated[
         str | None,
         Field(min_length=2, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN, default=None),
@@ -305,7 +306,7 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         primary_key=True, init=False,
     )
     name: Mapped[str] = mapped_column(String(30))
-    username: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(100))
     profile_image_url: Mapped[str] = mapped_column(
@@ -332,6 +333,15 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         # Derived, not stored. is_deleted stays the single source of truth.
         return not self.is_deleted
 ```
+
+!!! note "Existing databases"
+    `username` is 32 characters wide so OAuth signups fit the usernames crudauth generates. Tables created while it was 20 characters keep the old width until you alter them:
+
+    ```sql
+    ALTER TABLE "user" ALTER COLUMN username TYPE VARCHAR(32);
+    ```
+
+    If you manage the schema with Alembic, `alembic revision --autogenerate` picks up the change instead.
 
 Mixins from `infrastructure/database/models`:
 

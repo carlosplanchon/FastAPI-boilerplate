@@ -45,12 +45,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from ..common.schemas import PersistentDeletion, TimestampSchema
-
-
-# Declared once, reused by every schema that carries a username: the rule has to
-# match the column (String(32)) and whatever OAuth provisioning generates
-USERNAME_MAX_LENGTH = 32
-USERNAME_PATTERN = r"^[a-z0-9_]+$"
+from .constants import USERNAME_MAX_LENGTH, USERNAME_PATTERN
 
 
 # Common fields shared by create/update/full-record

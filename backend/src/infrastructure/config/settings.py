@@ -2,6 +2,7 @@ import logging
 import os
 from enum import StrEnum
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from starlette.config import Config
 
@@ -10,18 +11,24 @@ from .enums import CacheBackend, LogFormat, LogLevel, SessionBackend, TaskiqBrok
 logger = logging.getLogger(__name__)
 
 current_file_dir = os.path.dirname(os.path.realpath(__file__))
+backend_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", ".."))
 project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", "..", ".."))
 
 env_paths = [
     "/app/.env",
+    os.path.join(backend_root, ".env"),
     os.path.join(project_root, ".env"),
     "/.env",
 ]
 
 env_path = next((path for path in env_paths if os.path.isfile(path)), env_paths[0])
-logger.info(f"Using environment file at: {env_path}")
 
-config = Config(env_path)
+running_under_pytest = os.environ.get("ENVIRONMENT") == "pytest" or "PYTEST_VERSION" in os.environ
+if running_under_pytest:
+    config = Config()
+else:
+    logger.info(f"Using environment file at: {env_path}")
+    config = Config(env_path)
 
 
 class EnvironmentOption(StrEnum):
@@ -53,6 +60,13 @@ class DatabaseSettings(BaseSettings):
 
     POSTGRES_POOL_SIZE: int = config("POSTGRES_POOL_SIZE", default=20, cast=int)
     POSTGRES_MAX_OVERFLOW: int = config("POSTGRES_MAX_OVERFLOW", default=0, cast=int)
+    POSTGRES_POOL_PRE_PING: bool = config("POSTGRES_POOL_PRE_PING", default=True, cast=bool)
+    POSTGRES_POOL_RECYCLE: int = config("POSTGRES_POOL_RECYCLE", default=-1, cast=int)
+
+    DATABASE_URL_OVERRIDE: str | None = Field(
+        default=config("DATABASE_URL", default=None),
+        validation_alias="DATABASE_URL",
+    )
 
     @property
     def DATABASE_URL(self) -> str:
@@ -61,9 +75,8 @@ class DatabaseSettings(BaseSettings):
         Checks for DATABASE_URL environment variable first (production pattern),
         then falls back to constructing from individual components (development pattern).
         """
-        direct_url = config("DATABASE_URL", default=None)
-        if direct_url:
-            return direct_url
+        if self.DATABASE_URL_OVERRIDE:
+            return self.DATABASE_URL_OVERRIDE
 
         return (
             f"{self.POSTGRES_ASYNC_PREFIX}{self.POSTGRES_USER}:"
@@ -175,7 +188,7 @@ class CORSSettings(BaseSettings):
     """CORS-related settings."""
 
     CORS_ENABLED: bool = config("CORS_ENABLED", default=True, cast=bool)
-    CORS_ORIGINS: str = config("CORS_ORIGINS", default="*")
+    CORS_ORIGINS: str = config("CORS_ORIGINS", default="http://localhost:3000,http://localhost:5173")
     CORS_ALLOW_CREDENTIALS: bool = config("CORS_ALLOW_CREDENTIALS", default=True, cast=bool)
 
     @property

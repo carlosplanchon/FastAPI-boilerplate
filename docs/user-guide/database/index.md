@@ -8,6 +8,7 @@ Learn how to work with the database layer in the FastAPI Boilerplate. This secti
 - **[Schemas](schemas.md)** - Validate and serialize data with Pydantic
 - **[CRUD Operations](crud.md)** - Database access via FastCRUD
 - **[Migrations](migrations.md)** - Manage schema changes with Alembic
+- **[Neon](neon.md)** - Run on serverless Postgres instead of a local container
 
 ## Quick Overview
 
@@ -67,7 +68,7 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "user"
 
     id: Mapped[int] = mapped_column(primary_key=True, init=False)
-    username: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(100))
 ```

@@ -40,8 +40,16 @@ CREATE_TABLES_ON_STARTUP=true
 | `CREATE_TABLES_ON_STARTUP` | `true` | Auto-create tables from models on startup |
 | `POSTGRES_POOL_SIZE` | `20` | SQLAlchemy connection pool size |
 | `POSTGRES_MAX_OVERFLOW` | `0` | Pool overflow connections |
+| `POSTGRES_POOL_PRE_PING` | `true` | Test a pooled connection before use, replacing ones the server has dropped |
+| `POSTGRES_POOL_RECYCLE` | `-1` | Discard connections older than N seconds (`-1` disables) |
 
-If you set `DATABASE_URL` directly, it overrides the constructed URL.
+If you set `DATABASE_URL` directly, it overrides the constructed URL — use it whenever the connection needs more than host/port/credentials, such as a managed provider that requires TLS:
+
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@host.example.com/dbname?ssl=require
+```
+
+The URL must use the `postgresql+asyncpg://` prefix, and query parameters are passed to `asyncpg` (which spells TLS `ssl=require`, not libpq's `sslmode=require`). The [production validator](../production.md#the-production-validator) reads the credentials out of the URL, so the `POSTGRES_*` variables can keep their defaults. See [Neon](../database/neon.md) for a full walkthrough with a serverless provider.
 
 ## Cache
 
@@ -143,14 +151,14 @@ TASKIQ_MAX_TASKS_PER_WORKER=1000
 
 ```env
 CORS_ENABLED=true
-CORS_ORIGINS=*                  # comma-separated list of origins
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173  # comma-separated list of origins
 CORS_ALLOW_CREDENTIALS=true
 CORS_ALLOW_METHODS=*
 CORS_ALLOW_HEADERS=*
 ```
 
 !!! danger "CORS in Production"
-    Never use `*` for `CORS_ORIGINS` in production. Specify exact domains:
+    Never use `*` for `CORS_ORIGINS` in production: any website could call the API from your users' browsers, and with `CORS_ALLOW_CREDENTIALS=true` those requests carry their session cookie. The production security validator refuses to start with it. Specify exact domains:
     ```env
     CORS_ORIGINS=https://yourapp.com,https://www.yourapp.com
     CORS_ALLOW_METHODS=GET,POST,PUT,DELETE,PATCH
@@ -167,9 +175,11 @@ GZIP_MINIMUM_SIZE=1000
 ### API Docs
 
 ```env
-ENABLE_DOCS_IN_PRODUCTION=false  # serve /docs even when ENVIRONMENT=production
+ENABLE_DOCS_IN_PRODUCTION=false  # serve /docs even when ENVIRONMENT=production (superuser-only)
 OPENAPI_PREFIX=                   # path prefix for the OpenAPI schema
 ```
+
+When docs are served outside development (staging, or production with `ENABLE_DOCS_IN_PRODUCTION=true`), the built-in FastAPI docs routes are not registered — `/docs`, `/redoc`, and `/openapi.json` are only reachable through the app's own routes, which require superuser authentication.
 
 ## Authentication & Security
 

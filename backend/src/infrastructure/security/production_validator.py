@@ -5,6 +5,7 @@ checking for common misconfigurations that could lead to security vulnerabilitie
 """
 
 import re
+from urllib.parse import unquote, urlsplit
 
 from ..config.settings import EnvironmentOption, Settings
 from ..logging import get_logger
@@ -162,9 +163,10 @@ class ProductionSecurityValidator:
         Note:
             Critical security issues include:
             - Insecure secret keys
-            - Unprotected admin interfaces
             - Default database credentials
             - Empty database passwords
+            - Admin interface enabled without credentials
+            - CORS allowing every origin
 
             These issues can lead to immediate security breaches and
             should be fixed before production deployment.
@@ -172,9 +174,10 @@ class ProductionSecurityValidator:
         Example:
             Critical issues that would be detected:
             - SECRET_KEY using default values
-            - Admin interface with no IP restrictions
             - Database using 'postgres' password
             - Empty database password
+            - ADMIN_ENABLED without ADMIN_USERNAME/ADMIN_PASSWORD
+            - CORS_ORIGINS containing '*'
         """
         errors = []
 
@@ -187,7 +190,7 @@ class ProductionSecurityValidator:
 
         if self._is_database_using_default_credentials():
             errors.append(
-                "Database is using default credentials (POSTGRES_PASSWORD='postgres'). "
+                "Database is using default credentials (password 'postgres'). "
                 "This is a well-known default that attackers will try first. "
                 "Use a strong, unique password for production."
             )
@@ -197,6 +200,25 @@ class ProductionSecurityValidator:
                 "Database password is empty (POSTGRES_PASSWORD is not set). "
                 "This leaves your database completely unprotected. "
                 "Set a strong password for production."
+            )
+
+        if self.settings.ADMIN_ENABLED and (not self.settings.ADMIN_USERNAME or not self.settings.ADMIN_PASSWORD):
+            errors.append(
+                "Admin interface is enabled (ADMIN_ENABLED=true) but ADMIN_USERNAME and/or "
+                "ADMIN_PASSWORD are not set. Set both to strong, unique values or set "
+                "ADMIN_ENABLED=false for production."
+            )
+
+        if self._is_cors_too_permissive():
+            credentials_note = (
+                " Combined with CORS_ALLOW_CREDENTIALS=true, this lets any browser origin "
+                "make authenticated cross-origin requests with the user's session cookie."
+                if getattr(self.settings, "CORS_ALLOW_CREDENTIALS", True)
+                else ""
+            )
+            errors.append(
+                "CORS_ORIGINS contains '*' in production. Restrict to an explicit "
+                "comma-separated allowlist of real domains." + credentials_note
             )
 
         return errors
@@ -211,7 +233,6 @@ class ProductionSecurityValidator:
         Note:
             Warning-level security issues include:
             - Redis instances without passwords
-            - Overly permissive CORS settings
             - Debug mode enabled in production
             - API documentation exposed
             - Insecure session configurations
@@ -222,7 +243,6 @@ class ProductionSecurityValidator:
 
         Example:
             Warning issues that would be detected:
-            - CORS_ORIGINS set to '*'
             - Redis without password authentication
             - Session timeout too long
             - Weak admin usernames or passwords
@@ -232,10 +252,11 @@ class ProductionSecurityValidator:
         redis_warnings = self._check_redis_security()
         warnings.extend(redis_warnings)
 
-        if self._is_cors_too_permissive():
+        if self._is_database_url_without_password():
             warnings.append(
-                "CORS_ORIGINS is set to '*' (allow all origins). This can enable "
-                "cross-origin attacks. Consider restricting to specific domains in production."
+                "DATABASE_URL is set but contains no password. This is expected with "
+                "IAM or certificate-based authentication, but is a mistake otherwise — "
+                "confirm the database is not reachable without credentials."
             )
 
         if self._is_debug_enabled():
@@ -358,6 +379,42 @@ class ProductionSecurityValidator:
         """
         return False
 
+    @staticmethod
+    def _password_from_url(url: str) -> str | None:
+        """Extract the password component of a database URL.
+
+        Args:
+            url: A database URL, with or without credentials.
+
+        Returns:
+            The decoded password, or None if the URL carries none or cannot be parsed.
+        """
+        try:
+            password = urlsplit(url).password
+        except ValueError:
+            return None
+
+        return unquote(password) if password is not None else None
+
+    def _effective_database_password(self) -> str | None:
+        """Get the password the application will actually connect with.
+
+        A `DATABASE_URL` in the environment overrides every `POSTGRES_*` setting,
+        so a deployment against a managed provider (Neon, RDS, Cloud SQL) carries
+        its real credentials in that URL while `POSTGRES_PASSWORD` keeps its
+        default. Reading `POSTGRES_PASSWORD` alone would flag such a deployment as
+        insecure and refuse to start.
+
+        Returns:
+            The password embedded in `DATABASE_URL` when one is set, otherwise
+            `POSTGRES_PASSWORD`. None means an explicit URL was given but carries
+            no password at all, or could not be parsed.
+        """
+        if not self.settings.DATABASE_URL_OVERRIDE:
+            return self.settings.POSTGRES_PASSWORD
+
+        return self._password_from_url(self.settings.DATABASE_URL_OVERRIDE)
+
     def _is_database_using_default_credentials(self) -> bool:
         """Check if database is using well-known default credentials.
 
@@ -369,7 +426,7 @@ class ProductionSecurityValidator:
             commonly targeted by attackers. Production systems should
             use strong, unique passwords.
         """
-        return self.settings.POSTGRES_PASSWORD == "postgres"
+        return self._effective_database_password() == "postgres"
 
     def _is_database_password_empty(self) -> bool:
         """Check if database password is empty or missing.
@@ -380,8 +437,26 @@ class ProductionSecurityValidator:
         Note:
             Empty database passwords leave the database completely
             unprotected and accessible to anyone who can reach it.
+
+            A `DATABASE_URL` with no password at all is not treated as an error —
+            authentication may be handled outside the connection string (IAM,
+            client certificates, a trusted socket). That case is warned about
+            instead, since it cannot be verified from here.
         """
-        return not self.settings.POSTGRES_PASSWORD or self.settings.POSTGRES_PASSWORD.strip() == ""
+        password = self._effective_database_password()
+        if password is None:
+            return False
+
+        return not password or password.strip() == ""
+
+    def _is_database_url_without_password(self) -> bool:
+        """Check if an explicit DATABASE_URL carries no password.
+
+        Returns:
+            True if `DATABASE_URL` is set but has no password component,
+            False otherwise.
+        """
+        return bool(self.settings.DATABASE_URL_OVERRIDE) and self._effective_database_password() is None
 
     def _check_redis_security(self) -> list[str]:
         """Check Redis security configuration for all Redis instances.

@@ -4,18 +4,11 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from ..common.schemas import PersistentDeletion, TimestampSchema
-
-# Kept in one place because every user schema has to agree with the ``username``
-# column (``String(32)``) *and* with what crudauth's OAuth username generator
-# emits: it caps at 32 and sanitizes to lowercase alphanumerics plus underscores.
-# A narrower rule here does not reject the signup - crudauth writes the row
-# directly - it makes the resulting user unreadable through ``UserRead``.
-USERNAME_MAX_LENGTH = 32
-USERNAME_PATTERN = r"^[a-z0-9_]+$"
+from .constants import NAME_MAX_LENGTH, USERNAME_MAX_LENGTH, USERNAME_PATTERN
 
 
 class UserBase(BaseModel):
-    name: Annotated[str, Field(min_length=2, max_length=30, examples=["User Userson"])]
+    name: Annotated[str, Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userson"])]
     username: Annotated[
         str,
         Field(min_length=2, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN, examples=["userson"]),
@@ -49,7 +42,7 @@ class UserRead(BaseModel):
     """Schema for reading user data, excludes sensitive information."""
 
     id: int
-    name: Annotated[str, Field(min_length=2, max_length=30, examples=["User Userson"])]
+    name: Annotated[str, Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userson"])]
     username: Annotated[
         str,
         Field(min_length=2, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN, examples=["userson"]),
@@ -107,7 +100,7 @@ class UserUpdate(BaseModel):
 
     name: Annotated[
         str | None,
-        Field(min_length=2, max_length=30, examples=["User Userberg"], default=None),
+        Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userberg"], default=None),
     ]
     username: Annotated[
         str | None,

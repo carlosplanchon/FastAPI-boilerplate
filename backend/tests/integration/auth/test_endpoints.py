@@ -92,6 +92,42 @@ async def test_oauth_google_login(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("redirect_uri", "stored_redirect"),
+    [
+        ("https://evil.example.com", None),
+        ("//evil.example.com", None),
+        ("/\\evil.example.com", None),
+        ("/dash\nboard", None),
+        ("/dashboard?tab=billing", "/dashboard?tab=billing"),
+    ],
+)
+async def test_oauth_google_login_stores_only_same_origin_redirects(
+    client: AsyncClient, redirect_uri: str, stored_redirect: str | None
+):
+    """Only same-origin relative paths are stored in the OAuth state; anything else is dropped."""
+    mock_provider = MagicMock()
+    mock_provider.get_authorization_url = MagicMock(
+        return_value={
+            "url": "https://accounts.google.com/o/oauth2/v2/auth?dummy=params",
+            "state": "test-state-value",
+            "code_verifier": "test-code-verifier",
+        }
+    )
+    mock_storage = MagicMock()
+    mock_storage.create = AsyncMock(return_value="test-state-value")
+
+    with (
+        patch(f"{ROUTES}.oauth_providers", {"google": mock_provider}),
+        patch(f"{ROUTES}.oauth_state_storage", mock_storage),
+    ):
+        response = await client.get("/api/v1/auth/oauth/google", params={"redirect_uri": redirect_uri})
+
+    assert response.status_code == 200
+    assert mock_storage.create.call_args.args[0].redirect_to == stored_redirect
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_invalid_state(client: AsyncClient):
     """An unknown state parameter is rejected (302 redirect / 400 for json)."""
     mock_storage = MagicMock()
@@ -327,14 +363,7 @@ async def test_oauth_callback_success_creates_user(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_oauth_callback_handles_long_provider_usernames(client: AsyncClient):
-    """OAuth signup survives providers whose usernames sanitize to >20 chars.
-
-    crudauth's provisioning caps generated usernames at 32 chars
-    (USERNAME_MAX_LENGTH), and OIDC ``preferred_username`` values shaped like
-    ``user@org.domain`` routinely exceed 20 after sanitizing, so the column
-    must fit the generator's cap. The provider's display name is unbounded
-    and gets truncated to ``User.name``'s width by ``new_user_fields``.
-    """
+    """OAuth signup succeeds when the provider's username and display name exceed the old column widths."""
     valid_state = OAuthState(
         state="long-name-state",
         provider="google",
@@ -354,8 +383,8 @@ async def test_oauth_callback_handles_long_provider_usernames(client: AsyncClien
             provider_user_id="google-uid-long",
             email="long_username@example.com",
             email_verified=True,
-            name="A" * 50,  # unbounded provider display name
-            username="verylongusername@subdomain.example.com",  # sanitizes to >20 chars
+            name="A" * 50,
+            username="verylongusername@subdomain.example.com",
         )
     )
 
@@ -371,7 +400,57 @@ async def test_oauth_callback_handles_long_provider_usernames(client: AsyncClien
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    assert 20 < len(body["user"]["username"]) <= 32
+    assert body["user"]["username"] == "verylongusername_subdomain_examp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_redirect", "expected_location"),
+    [
+        ("/docs", "/docs"),
+        ("https://evil.example.com", "/"),
+        ("/\\evil.example.com", "/"),
+    ],
+)
+async def test_oauth_callback_redirect_sets_session_cookies(client: AsyncClient, stored_redirect: str, expected_location: str):
+    """The browser callback redirects to a same-origin path and carries the session cookies."""
+    valid_state = OAuthState(
+        state="redirect-state",
+        provider="google",
+        redirect_to=stored_redirect,
+        code_verifier="test-code-verifier",
+    )
+    mock_storage = MagicMock()
+    mock_storage.get = AsyncMock(return_value=valid_state)
+    mock_storage.delete = AsyncMock(return_value=None)
+
+    mock_provider = MagicMock()
+    mock_provider.exchange_code = AsyncMock(return_value={"access_token": "tok"})
+    mock_provider.get_user_info = AsyncMock(return_value={})
+    mock_provider.process_user_info = AsyncMock(
+        return_value=OAuthUserInfo(
+            provider="google",
+            provider_user_id="google-uid-redirect",
+            email="redirect_flow@example.com",
+            email_verified=True,
+            name="Redirect Flow",
+        )
+    )
+
+    with (
+        patch(f"{ROUTES}.oauth_state_storage", mock_storage),
+        patch(f"{ROUTES}.oauth_providers", {"google": mock_provider}),
+    ):
+        response = await client.get(
+            "/api/v1/auth/oauth/callback/google",
+            params={"code": "test-code", "state": "redirect-state"},
+        )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == expected_location
+    set_cookie = response.headers.get_list("set-cookie")
+    assert any(c.startswith("session_id=") for c in set_cookie), set_cookie
+    assert any(c.startswith("csrf_token=") for c in set_cookie), set_cookie
 
 
 @pytest.mark.asyncio
