@@ -1,4 +1,5 @@
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from crudauth import Principal
 from crudauth.exceptions import UnauthorizedException
@@ -21,10 +22,15 @@ router = APIRouter(tags=["Authentication"])
 
 
 def _safe_redirect_path(redirect_uri: str | None) -> str | None:
-    """Allow only relative paths as post-auth redirect targets."""
-    if redirect_uri and redirect_uri.startswith("/") and not redirect_uri.startswith("//"):
-        return redirect_uri
-    return None
+    """Allow only same-origin relative paths as post-auth redirect targets."""
+    if not redirect_uri or not redirect_uri.startswith("/") or redirect_uri.startswith("//"):
+        return None
+    if "\\" in redirect_uri or any(ord(char) < 0x20 for char in redirect_uri):
+        return None
+    parts = urlsplit(redirect_uri)
+    if parts.scheme or parts.netloc:
+        return None
+    return redirect_uri
 
 
 @router.post(
@@ -285,8 +291,10 @@ async def oauth_google_callback(
                 "csrf_token": csrf_token,
             }
 
-        redirect_to = _safe_redirect_path(str(state_data.redirect_to) if state_data.redirect_to else None) or "/"
-        return RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
+        redirect_to = _safe_redirect_path(state_data.redirect_to) or "/"
+        redirect = RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
+        crud_auth.sessions.set_session_cookies(redirect, session_id, csrf_token)
+        return redirect
 
     except Exception as e:
         logger.error(f"Error in Google OAuth callback: {str(e)}", exc_info=True)
