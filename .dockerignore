@@ -1,5 +1,3 @@
-# The compose files build with the WORKSPACE ROOT as context (uv.lock lives
-# here), so keep the context lean and free of secrets.
 .git
 .venv
 **/__pycache__

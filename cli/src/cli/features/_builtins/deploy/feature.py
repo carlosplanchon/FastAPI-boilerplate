@@ -44,10 +44,6 @@ class DeployFeature(Feature):
         redis_image = params.get("redis_image", "redis:7-alpine")
         nginx_image = params.get("nginx_image", "nginx:1.27-alpine")
         backend_context = params.get("backend_context", "./backend")
-        # The image build uses the WORKSPACE ROOT as context - uv.lock and the
-        # member manifests live there, not in backend/ - so the Dockerfile path
-        # is context-relative. backend_context stays a host-side path for
-        # volume mounts and the env file.
         build_context = params.get("build_context", ".")
         backend_dockerfile = params.get("backend_dockerfile", "backend/Dockerfile")
         env_file = params.get("env_file", "./backend/.env")

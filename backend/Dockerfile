@@ -7,19 +7,17 @@ WORKDIR /tmp
 # Use official uv image with pinned version for reproducibility
 COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
 
-# Copy the workspace manifests + lock for deterministic export. The build
-# context must be the WORKSPACE ROOT: uv.lock lives there (not in backend/),
-# and resolving the workspace needs every member manifest.
+# Copy the workspace manifests and uv.lock for deterministic export
 COPY pyproject.toml uv.lock ./
 COPY backend/pyproject.toml backend/pyproject.toml
 COPY cli/pyproject.toml cli/pyproject.toml
 
 # Export from lock file (not re-resolving dependencies!)
-# Filter out the local project line ("./backend") and keep only external deps
+# Filter out the local project line and keep only external dependencies
 RUN uv export --package fastapi-boilerplate --no-dev --no-editable -o /tmp/req-full.txt && \
     grep -vE "^\.(/backend)?$" /tmp/req-full.txt > requirements-prod.txt
 
-# Export dev requirements (the backend's `dev` extra) from lock file
+# Export dev requirements from lock file
 RUN uv export --package fastapi-boilerplate --extra dev --no-editable -o /tmp/req-dev-full.txt && \
     grep -vE "^\.(/backend)?$" /tmp/req-dev-full.txt > requirements-dev.txt
 
